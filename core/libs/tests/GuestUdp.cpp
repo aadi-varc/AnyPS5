@@ -15,6 +15,7 @@ int APS5_VABI bind_nid_postfix(int, const void*, std::uint32_t);
 int APS5_VABI getsockname_nid_postfix(int, void*, std::uint32_t*);
 int APS5_VABI ioctl_nid_postfix(int, std::uint64_t, void*);
 int APS5_VABI _ioctl_nid_postfix(int, std::uint64_t, void*);
+std::int64_t APS5_VABI send_nid_postfix(int, const void*, std::uint64_t, int);
 std::int64_t APS5_VABI sendto_nid_postfix(int, const void*, std::uint64_t, int, const void*, std::uint32_t);
 std::int64_t APS5_VABI recvfrom_nid_postfix(int, void*, std::uint64_t, int, void*, std::uint32_t*);
 int APS5_VABI close_nid_postfix(int);
@@ -68,6 +69,18 @@ int main() {
     Require(getsockopt_nid_postfix(sender, 0xffff, 0x20, &option, &optionSize) == 0 && option != 0);
     Require(setsockopt_nid_postfix(sender, 0xffff, 12345, &enabled, sizeof(enabled)) == -1);
     Require(*__error_nid_postfix() == 42);
+#ifdef _WIN32
+    char unaddressed[] = "no destination";
+    const int loose = socket_nid_postfix(2, 2, 0);
+    Require(loose >= 0);
+    Require(send_nid_postfix(loose, unaddressed, sizeof(unaddressed), 0) == -1 && *__error_nid_postfix() == 39);
+    Require(sendto_nid_postfix(loose, unaddressed, sizeof(unaddressed), 0, nullptr, 0) == -1 && *__error_nid_postfix() == 39);
+    Iovec unaddressedVector{unaddressed, sizeof(unaddressed)};
+    Msghdr unaddressedMessage{nullptr, 0, &unaddressedVector, 1, nullptr, 0, 0};
+    Require(sendmsg_nid_postfix(loose, &unaddressedMessage, 0) == -1 && *__error_nid_postfix() == 39);
+    Require(sceKernelWritev(loose, &unaddressedVector, 1) == static_cast<std::int32_t>(0x80020027u) && *__error_nid_postfix() == 39);
+    Require(close_nid_postfix(loose) == 0);
+#endif
     const int unsized = socket_nid_postfix(2, 2, 0);
     std::array<unsigned char, 16> unsizedAddress{0, 2, 0, 0, 127, 0, 0, 1};
     Require(unsized >= 0 && bind_nid_postfix(unsized, unsizedAddress.data(), unsizedAddress.size()) == 0);
