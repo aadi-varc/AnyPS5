@@ -1,6 +1,7 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 extern "C" {
 char* APS5_VABI getenv_nid_postfix(const char*);
 int APS5_VABI setenv_nid_postfix(const char*, const char*, int);
@@ -36,6 +37,14 @@ int main() {
     Require(std::strcmp(getenv_nid_postfix(key), "two") == 0);
     Require(setenv_nid_postfix("bad=name", "x", 1) == -1);
     Require(*__error_nid_postfix() == 22);
+    for (const char* invalidName : {static_cast<const char*>(nullptr), "", "bad=name", "=leading"}) {
+        *__error_nid_postfix() = 0;
+        Require(getenv_nid_postfix(invalidName) == nullptr);
+        Require(*__error_nid_postfix() == 22);
+    }
+    *__error_nid_postfix() = 13;
+    Require(getenv_nid_postfix("ANYPS5_GUEST_ENV_TEST_ABSENT_4C27") == nullptr);
+    Require(*__error_nid_postfix() == 13);
     Require(unsetenv_nid_postfix("") == -1);
     char invalid[] = "no-separator";
     Require(putenv_nid_postfix(invalid) == -1);
