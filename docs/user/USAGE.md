@@ -197,6 +197,12 @@ Set `APS5_CRASH_INDIRECT_MEMORY=1` before launching the executable to include up
 
 ## Import audit
 
+The browser converter displays a compatibility report after conversion and saves `compatibility-report.json` with the result. Its JSON download can be attached to a bug report. Files are analysed locally; the converter downloads the libraries and their export catalog, without uploading app files.
+
+The catalog reads exports from the exact release archive and rejects libraries for the wrong platform. The report checks the executable registry, reported guest module imports and final executable dependencies. Other guest module imports and functions loaded later are not fully audited; weak import strength is not recorded. Missing exports may therefore include optional imports. Exported functions do not establish runtime compatibility.
+
+Source stub matches describe throwing functions in the converter source checkout. They do not establish the behavior of the packaged release libraries. Converter build commit and dirty state are recorded in the WebAssembly build; the library build commit remains unknown unless supplied by verified build metadata. Reports retain these limits and include input file names; review them before sharing.
+
 [`tools/import_audit.py`](../../tools/import_audit.py) lists the system functions a converted game imports and whether the built libraries provide them, before the game is launched. It needs Python 3 and nothing else.
 
 ```sh

@@ -1,4 +1,5 @@
 import { Archive, CONVERSION_LIMIT, MEMORY_LIMIT, memoryEstimate, packageArchive } from "./archive.mjs";
+import { compatibilityReport } from "./compatibility.mjs";
 
 let archive;
 let busy = false;
@@ -32,7 +33,13 @@ async function downloadLibraries(target) {
   if (bytes.byteLength !== asset.size) throw new Error("System library download is incomplete");
   const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
   if (digest !== asset.sha256) throw new Error("System library checksum mismatch");
-  return { file: new Blob([bytes]), release, expandedBytes: asset.expandedBytes };
+  if (asset.imports?.path !== `libraries/${target}-${asset.sha256}.imports.json` || !/^[a-f0-9]{64}$/u.test(asset.imports?.sha256)) throw new Error("Compatibility information is unavailable. Reload this page after the Pages build finishes.");
+  const catalogResponse = await fetch(asset.imports.path);
+  if (!catalogResponse.ok) throw new Error(`Cannot load compatibility information (${catalogResponse.status})`);
+  const catalogBytes = await catalogResponse.arrayBuffer();
+  const catalogDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", catalogBytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  if (catalogDigest !== asset.imports.sha256) throw new Error("Compatibility catalog checksum mismatch");
+  return { file: new Blob([bytes]), release, expandedBytes: asset.expandedBytes, catalog: JSON.parse(new TextDecoder().decode(catalogBytes)) };
 }
 
 self.onmessage = async ({ data }) => {
@@ -67,6 +74,12 @@ self.onmessage = async ({ data }) => {
       const converted = native.Convert(input, report);
       input = null;
       if (!converted.ok) throw new Error(converted.error);
+      converted.compatibility = compatibilityReport(converted.audit, libraries.catalog, {
+        target: data.target, releaseTag: libraries.release.tag,
+        librarySha256: libraries.release.platforms[data.target].sha256,
+        converterCommit: converted.audit.converter_commit || null, converterDirty: converted.audit.converter_dirty
+      });
+      self.postMessage({ type: "compatibility", report: converted.compatibility, outputName });
       const chunks = [];
       let size = 0;
       const send = (event, transfer = []) => new Promise(resolve => {

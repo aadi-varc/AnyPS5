@@ -1,3 +1,5 @@
+import { compatibilityText } from "./compatibility.mjs";
+
 const $ = id => document.getElementById(id);
 const stages = ["Converting executable", "Converting PRX modules", "Scanning syscalls", "Scanning instructions", "Converting instructions", "Analysing imports", "Building output image", "Writing output"];
 let worker;
@@ -7,6 +9,7 @@ let working = false;
 let sink;
 let outputDirectory;
 let downloadUrl;
+let reportUrl;
 let logs = [];
 let release;
 const canSaveZip = typeof window.showSaveFilePicker === "function" && window.isSecureContext;
@@ -126,6 +129,19 @@ async function onMessage({ data }) {
       if (!sink) throw new Error("No output file is open");
       await sink.write(data.bytes);
       worker?.postMessage({ type: "written" });
+    } else if (data.type === "compatibility") {
+      const report = data.report;
+      $("compatibility-report").hidden = false;
+      $("compatibility-summary").textContent = report.missing_libraries.length || report.counts.absent || report.counts.other_provider ? "Missing files or import providers were found. Review the report before launching." : "No missing files or import providers found in this check. Running the app is unverified.";
+      $("missing-libraries").textContent = report.missing_libraries.length;
+      $("missing-functions").textContent = report.counts.absent;
+      $("source-stubs").textContent = report.counts.source_stubs;
+      $("source-warning").textContent = report.warnings.join(" ");
+      $("compatibility-details").textContent = compatibilityText(report);
+      if (reportUrl) URL.revokeObjectURL(reportUrl);
+      reportUrl = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2) + "\n"], { type: "application/json" }));
+      $("report-download").href = reportUrl;
+      $("report-download").download = `${data.outputName}-compatibility.json`;
     } else if (data.type === "complete") {
       if (sink) { await sink.close(); sink = null; }
       working = false;
@@ -160,12 +176,13 @@ async function selectFile(selected, files) {
   if (!files && !selected.name.toLowerCase().endsWith(".zip")) { await fail("Choose a ZIP archive."); return; }
   worker?.terminate();
   if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
+  if (reportUrl) { URL.revokeObjectURL(reportUrl); reportUrl = null; }
   summary = null;
   file = selected;
   working = true;
   logs = [];
   $("log").textContent = "";
-  for (const id of ["error", "done", "download", "warnings", "selection"]) $(id).hidden = true;
+  for (const id of ["error", "done", "download", "warnings", "selection", "compatibility-report"]) $(id).hidden = true;
   $("acknowledge").checked = false;
   $("status").hidden = false;
   $("cancel").hidden = false;

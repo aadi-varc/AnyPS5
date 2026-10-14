@@ -11,16 +11,21 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "core/relinker/relinker/tests"))
 from test_guest_intel_trampolines import main_fixture
 from test_guest_module_directories import module_with_symbol
+from test_guest_module_identity import declared_provider
+from test_windows_import_modules import executable
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", type=Path, required=True)
     args = parser.parse_args()
+    subprocess.run(["node", str(ROOT / "demo/web/tests/compatibility.test.mjs")], check=True, timeout=20)
     with tempfile.TemporaryDirectory(prefix="anyps5-web-") as directory:
         fixture = Path(directory)
         (fixture / "main.elf").write_bytes(main_fixture())
         (fixture / "module.elf").write_bytes(module_with_symbol(True))
+        (fixture / "identity.elf").write_bytes(executable("libGuest.suprx", symbol="shared#A#B", module_name="libGuest"))
+        (fixture / "identity-module.elf").write_bytes(declared_provider(22, ("libGuest",)))
         source = (args.build / "web/archive.mjs").read_text(encoding="utf-8")
         url = re.search(r'from "(https://cdn.jsdelivr.net/[^"\n]+)"', source).group(1)
         library = fixture / "zip.mjs"

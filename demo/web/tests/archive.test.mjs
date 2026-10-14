@@ -8,6 +8,7 @@ register("./cdn-loader.mjs", import.meta.url, { data: { url: process.env.ANYPS5_
 
 const site = name => pathToFileURL(path.join(process.argv[2], name)).href;
 const { Archive, memoryEstimate, MEMORY_LIMIT, ICON_LIMIT, packageArchive } = await import(site("archive.mjs"));
+const { compatibilityReport } = await import(site("compatibility.mjs"));
 const { BlobReader, BlobWriter, Uint8ArrayReader, Uint8ArrayWriter, ZipReader, ZipWriter } = await import(process.env.ANYPS5_TEST_ZIP_URL);
 await import("./archive-reserved.test.mjs");
 const { default: createRelinker } = await import(site("native/relinker_wasm.mjs"));
@@ -48,6 +49,12 @@ for (const target of ["windows", "linux"]) {
   const events = [];
   const converted = native.Convert(input, event => events.push(event));
   assert.equal(converted.ok, true, converted.error);
+  assert(Array.isArray(converted.audit.imports));
+  assert.equal(converted.audit.modules.length, 1);
+  assert(Array.isArray(converted.audit.needed));
+  converted.compatibility = compatibilityReport(converted.audit, {
+    schema: 1, platform: target, archive_sha256: "a".repeat(64), libraries: ["system.prx"], exports: {}, source_stubs: [], source_commit: null, source_dirty: null, library_commit: null
+  }, { target, releaseTag: "test", librarySha256: "a".repeat(64), converterCommit: null });
   assert.equal(converted.executable[0], target === "windows" ? 77 : 127);
   if (target === "windows") {
     const image = new DataView(converted.executable.buffer, converted.executable.byteOffset, converted.executable.byteLength);
@@ -69,6 +76,7 @@ for (const target of ["windows", "linux"]) {
   const byName = new Map(entries.map(entry => [entry.filename, entry]));
   assert(byName.has(input.outputName));
   assert(byName.has("libs/system.prx"));
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(await byName.get("compatibility-report.json").getData(new Uint8ArrayWriter(), { checkSignature: true }))), converted.compatibility);
   assert.deepEqual(await byName.get("app0/shaders/example.frag").getData(new Uint8ArrayWriter(), { checkSignature: true }), executable);
   assert.deepEqual(await byName.get("app0/sce_module/library.prx.esbak.guest.prx").getData(new Uint8ArrayWriter(), { checkSignature: true }), converted.modules[0].bytes);
   assert.deepEqual(await byName.get("app0/sce_module/library.prx").getData(new Uint8ArrayWriter(), { checkSignature: true }), new Uint8Array([79, 21, 61, 29]));
@@ -161,6 +169,20 @@ assert.equal((await oversizedIconArchive.conversionInput("linux", false, () => {
 await oversizedIconArchive.close();
 console.log("Oversized Windows-only icons do not block Linux conversion");
 
+for (const target of ["windows", "linux"]) {
+  const identity = native.Convert({
+    name: "identity.elf", outputName: target === "windows" ? "identity.exe" : "identity.elf", target, toIntel: false, icon: null,
+    executable: new Uint8Array(await readFile(path.join(process.argv[3], "identity.elf"))),
+    modules: [{ name: "sce_module/renamed.prx", bytes: new Uint8Array(await readFile(path.join(process.argv[3], "identity-module.elf"))) }]
+  }, () => {});
+  assert.equal(identity.ok, true, identity.error);
+  assert(identity.audit.imports.some(record => record.guest));
+  const report = compatibilityReport(identity.audit, { schema: 1, platform: target, archive_sha256: "a".repeat(64), libraries: [], exports: {}, source_stubs: [] }, { target, releaseTag: "test", librarySha256: "a".repeat(64) });
+  assert.equal(report.counts.absent, 0);
+  assert.deepEqual(report.missing_libraries, []);
+}
+console.log("Renamed guest module identities are not reported as missing on Windows or Linux");
+
 const workerMessages = [];
 globalThis.self = { postMessage: message => workerMessages.push(message) };
 await import(site("worker.mjs"));
@@ -168,5 +190,48 @@ await self.onmessage({ data: { type: "convert", target: "windows", mode: "disk" 
 assert.equal(workerMessages.length, 1);
 assert.equal(workerMessages[0].type, "error");
 assert.match(workerMessages[0].message, /browsers block DLL creation/u);
+const workerLibraries = await zip([["libs/system.prx", new Uint8Array([1, 2, 3])]]);
+const libraryBytes = await workerLibraries.arrayBuffer();
+const digest = async bytes => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+const libraryDigest = await digest(libraryBytes);
+const catalog = { schema: 1, platform: "windows", archive_sha256: libraryDigest, libraries: ["system.prx"], exports: {}, source_stubs: [], source_commit: null, source_dirty: null, library_commit: null };
+const catalogBytes = new TextEncoder().encode(JSON.stringify(catalog));
+const libraryPath = `libraries/windows-${libraryDigest}.zip`;
+const catalogPath = `libraries/windows-${libraryDigest}.imports.json`;
+const release = { tag: "test", platforms: { windows: { path: libraryPath, sha256: libraryDigest, size: libraryBytes.byteLength, expandedBytes: 3, imports: { path: catalogPath, sha256: await digest(catalogBytes) } } } };
+const originalFetch = globalThis.fetch;
+const requests = [];
+let corruptCatalog = false;
+globalThis.fetch = async url => {
+  requests.push(url);
+  if (url === "./release.json") return new Response(JSON.stringify(release));
+  if (url === "https://api.github.com/repos/boykopovar/AnyPS5/releases/latest") return new Response(JSON.stringify({ tag_name: "test" }));
+  if (url === libraryPath) return new Response(libraryBytes);
+  if (url === catalogPath) return new Response(corruptCatalog ? new Uint8Array([0]) : catalogBytes);
+  throw new Error(`Unexpected fetch: ${url}`);
+};
+try {
+  workerMessages.length = 0;
+  await self.onmessage({ data: { type: "inspect", file: source } });
+  await self.onmessage({ data: { type: "convert", target: "windows", toIntel: false, mode: "memory" } });
+  const compatibility = workerMessages.find(message => message.type === "compatibility");
+  assert(compatibility);
+  assert.equal(compatibility.report.library_commit, null);
+  assert(compatibility.report.converter_commit === null || /^[a-f0-9]{40}$/u.test(compatibility.report.converter_commit));
+  assert(compatibility.report.converter_dirty === null || typeof compatibility.report.converter_dirty === "boolean");
+  const complete = workerMessages.find(message => message.type === "complete");
+  assert(complete, JSON.stringify(workerMessages.filter(message => message.type === "error")));
+  const savedReader = new ZipReader(new BlobReader(complete.blob));
+  const savedReport = (await savedReader.getEntries()).find(entry => entry.filename === "compatibility-report.json");
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(await savedReport.getData(new Uint8ArrayWriter(), { checkSignature: true }))), compatibility.report);
+  await savedReader.close();
+  assert.deepEqual(requests, ["./release.json", "https://api.github.com/repos/boykopovar/AnyPS5/releases/latest", libraryPath, catalogPath]);
+  corruptCatalog = true;
+  workerMessages.length = 0;
+  await self.onmessage({ data: { type: "inspect", file: source } });
+  await self.onmessage({ data: { type: "convert", target: "windows", toIntel: false, mode: "memory" } });
+  assert(!workerMessages.some(message => message.type === "complete" || message.type === "compatibility"));
+  assert.match(workerMessages.find(message => message.type === "error").message, /catalog checksum mismatch/u);
+} finally { globalThis.fetch = originalFetch; }
 delete globalThis.self;
-console.log("Windows folder output rejected before conversion or file writes");
+console.log("Worker report and saved JSON verified; corrupt catalogs and Windows folder output rejected");

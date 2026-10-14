@@ -1,7 +1,11 @@
 #include <relinker/pipeline/Conversion.hpp>
 #include <io/NativePath.hpp>
+#include <io/BufferUtils.hpp>
+#include <WasmSourceStamp.hpp>
 #include <emscripten/bind.h>
+#include <algorithm>
 #include <stdexcept>
+#include <set>
 
 namespace {
 
@@ -42,6 +46,71 @@ emscripten::val CopyBytes(const std::vector<std::uint8_t>& bytes) {
     return emscripten::val::global("Uint8Array").new_(emscripten::val(emscripten::typed_memory_view(bytes.size(), bytes.data())));
 }
 
+emscripten::val ImportReport(const Relinker::ConversionOutput& output, const std::string& executable) {
+    auto report = emscripten::val::object();
+    report.set("converter_commit", std::string(ANYPS5_WASM_SOURCE_COMMIT));
+    if (ANYPS5_WASM_SOURCE_DIRTY < 0) report.set("converter_dirty", emscripten::val::null());
+    else report.set("converter_dirty", ANYPS5_WASM_SOURCE_DIRTY != 0);
+    const auto& dynamic = output.Analysis.DynamicSection;
+    std::set<std::uint64_t> guestTargets;
+    for (const auto* table : {&dynamic.RelaData, &dynamic.RelaPltData}) {
+        for (std::size_t offset = 0; offset + 24 <= table->size(); offset += 24) {
+            const auto symbol = Io::ReadU64(*table, offset + 8) >> 32;
+            if (symbol >= dynamic.DynSymData.size() / 24) continue;
+            const auto nameOffset = Io::ReadU32(dynamic.DynSymData, symbol * 24);
+            if (nameOffset >= dynamic.DynStrData.size()) throw std::runtime_error("Invalid import symbol name offset");
+            const auto start = dynamic.DynStrData.begin() + nameOffset;
+            const auto end = std::find(start, dynamic.DynStrData.end(), 0);
+            if (end == dynamic.DynStrData.end()) throw std::runtime_error("Unterminated import symbol name");
+            const auto target = Io::ReadU64(*table, offset);
+            bool guest = std::string(start, end).ends_with(Relinker::GuestSymbolSuffix);
+            const auto moduleName = dynamic.ImportModules.find(target);
+            if (moduleName != dynamic.ImportModules.end()) for (const auto& module : dynamic.GuestModules) {
+                guest = guest || std::find(module.Names.begin(), module.Names.end(), moduleName->second) != module.Names.end();
+            }
+            if (guest) guestTargets.insert(target);
+        }
+    }
+    auto imports = emscripten::val::array();
+    const auto append = [&](const auto& entries, const std::string& input, bool executableImports) {
+        for (const auto& entry : entries) {
+            auto record = emscripten::val::object();
+            record.set("nid", entry.Nid);
+            record.set("library", entry.Library);
+            record.set("input", input);
+            record.set("guest", executableImports && guestTargets.contains(entry.TargetOffset));
+            imports.call<void>("push", record);
+        }
+    };
+    append(output.Analysis.RegistryEntries, executable, true);
+    for (const auto& module : output.Modules) append(module.Imports, Io::Utf8Path(module.SourcePath.lexically_relative("/input")), false);
+    report.set("imports", imports);
+    auto modules = emscripten::val::array();
+    for (const auto& module : dynamic.GuestModules) {
+        auto record = emscripten::val::object();
+        record.set("path", module.Path);
+        auto names = emscripten::val::array();
+        for (const auto& name : module.Names) names.call<void>("push", name);
+        record.set("names", names);
+        modules.call<void>("push", record);
+    }
+    report.set("modules", modules);
+    auto needed = emscripten::val::array();
+    for (std::size_t offset = 0; offset + 16 <= dynamic.DynamicSegmentData.size(); offset += 16) {
+        const auto tag = Io::ReadU64(dynamic.DynamicSegmentData, offset);
+        if (tag == 0) break;
+        if (tag != 1) continue;
+        const auto index = Io::ReadU64(dynamic.DynamicSegmentData, offset + 8);
+        if (index >= dynamic.DynStrData.size()) throw std::runtime_error("Invalid dependency string offset");
+        const auto start = dynamic.DynStrData.begin() + index;
+        const auto end = std::find(start, dynamic.DynStrData.end(), 0);
+        if (end == dynamic.DynStrData.end()) throw std::runtime_error("Unterminated dependency string");
+        needed.call<void>("push", std::string(start, end));
+    }
+    report.set("needed", needed);
+    return report;
+}
+
 emscripten::val Convert(const emscripten::val& request, const emscripten::val& callback) {
     auto result = emscripten::val::object();
     try {
@@ -74,6 +143,7 @@ emscripten::val Convert(const emscripten::val& request, const emscripten::val& c
         options.ToIntel = request["toIntel"].as<bool>();
         BrowserProgress progress(callback);
         auto output = Relinker::Conversion(progress).Convert(std::move(input), options);
+        result.set("audit", ImportReport(output, name));
         result.set("executable", CopyBytes(output.Executable));
         result.set("diagnostics", output.WindowsDiagnostics);
         auto artifacts = emscripten::val::array();

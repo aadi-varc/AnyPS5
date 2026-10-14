@@ -111,6 +111,12 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_progress_read_encoding.py)
         add_test(NAME import_audit COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_import_audit.py)
+        add_test(NAME web_library_catalog COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_web_imports.py)
+        set_tests_properties(web_library_catalog PROPERTIES TIMEOUT 20)
+        add_test(NAME wasm_source_stamp COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_wasm_source_stamp.py ${CMAKE_COMMAND})
+        set_tests_properties(wasm_source_stamp PROPERTIES TIMEOUT 20)
         add_test(NAME unwrap_self COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_unwrap_self.py)
         add_test(NAME conventions_function_bodies COMMAND ${Python3_EXECUTABLE}
@@ -164,6 +170,12 @@ if(BUILD_TESTING)
         add_test(NAME performance_compare COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_performance_compare.py)
         set_tests_properties(performance_compare PROPERTIES TIMEOUT 20)
+    endif()
+    find_program(NodeJS_EXECUTABLE NAMES node)
+    if(NodeJS_EXECUTABLE)
+        add_test(NAME web_compatibility COMMAND ${NodeJS_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/demo/web/tests/compatibility.test.mjs)
+        set_tests_properties(web_compatibility PROPERTIES TIMEOUT 20)
     endif()
 endif()
 

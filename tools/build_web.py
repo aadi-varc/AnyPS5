@@ -7,6 +7,7 @@ import re
 import shutil
 import urllib.request
 import zipfile
+import web_imports
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -70,8 +71,13 @@ def publish_libraries(output):
                     raise ValueError(f"Corrupt release entry: {corrupt}")
                 expanded = sum(file.file_size for file in files)
             path = f"libraries/{platform}-{checksum}.zip"
+            catalog = web_imports.library_catalog(temporary, platform, checksum)
+            catalog_bytes = (json.dumps(catalog, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+            catalog_path = f"libraries/{platform}-{checksum}.imports.json"
+            (output / catalog_path).write_bytes(catalog_bytes)
             temporary.replace(output / path)
-            manifest["platforms"][platform] = {"path": path, "size": size, "expandedBytes": expanded, "sha256": checksum}
+            manifest["platforms"][platform] = {"path": path, "size": size, "expandedBytes": expanded, "sha256": checksum,
+                                                 "imports": {"path": catalog_path, "sha256": hashlib.sha256(catalog_bytes).hexdigest()}}
         finally:
             temporary.unlink(missing_ok=True)
     (output / "release.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
